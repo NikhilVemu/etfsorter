@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ETF Categorizer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+        .info {
+            background-color: #e3f2fd;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        .upload-section {
+            background-color: #f5f5f5;
+            padding: 20px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            border: 2px dashed #ccc;
+            text-align: center;
+        }
+        input[type="file"] {
+            margin: 10px 0;
+            font-size: 16px;
+        }
+        button {
+            background-color: #2196F3;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            font-size: 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 10px 5px;
+        }
+        button:hover {
+            background-color: #1976D2;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .download-button {
+            background-color: #4CAF50;
+        }
+        .download-button:hover {
+            background-color: #45a049;
+        }
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        .success {
+            background-color: #c8e6c9;
+            color: #2e7d32;
+        }
+        .error {
+            background-color: #ffcdd2;
+            color: #c62828;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ETF Categorizer</h1>
+        
+        <div class="info">
+            <p><strong>Categories (in order):</strong> 250, 150, Next 50, Other</p>
+            <p><strong>Output:</strong> Excel file (.xlsx) with merged category cells and hyperlinked scheme codes</p>
+            <p><strong>Sorting:</strong> Within each category by Asset (Cr.) desc, then Volume desc</p>
+            <p><strong>Exclusions:</strong></p>
+            <ul>
+                <li>150: Excludes ETFs with "Quality" or "Momtm"</li>
+                <li>250: Excludes ETFs with "MQ"</li>
+                <li>Next 50: Excludes ETFs with "Sensex"</li>
+            </ul>
+            <p><strong>Note:</strong> Scheme codes for select ETFs will be automatically filled and hyperlinked to MF API</p>
+        </div>
+
+        <div class="upload-section">
+            <h3>Upload your ETF CSV file</h3>
+            <input type="file" id="fileInput" accept=".csv">
+            <br>
+            <button id="processBtn" onclick="processFile()" disabled>Process & Download Excel</button>
+        </div>
+
+        <div id="status"></div>
+    </div>
+
+    <script>
+        // Enable/disable process button based on file selection
+        document.getElementById('fileInput').addEventListener('change', function(e) {
+            document.getElementById('processBtn').disabled = !e.target.files.length;
+        });
+
+        // Scheme code mapping
+        const schemeCodeMapping = {
+            'HDFC Nifty Small Cap 250 ETF': '151375',
+            'Motilal Oswal Nifty Smallcap 250 ETF': '152546',
+            'Nippon Nifty MC 150 ETF (MID150BEES)': '146271',
+            'Mirae Asset Nifty Midcap 150 ETF': '149918',
+            'ICICI Pru Nifty Midcap 150 ETF': '147921',
+            'HDFC Nifty Midcap 150 ETF': '151374',
+            'Zerodha Nifty Midcap 150 ETF': '152668',
+            'UTI Nifty Midcap 150 ETF': '152050',
+            'KOTAKMAMC - MID150': '153398',
+            'Nippon Nifty Next 50 Junior Bees - ETF': '140085',
+            'SBI Nifty Next 50 ETF': '134013',
+            'UTI Nifty Next 50 ETF': '141665',
+            'ICICI Pru Nifty Next 50 ETF': '144587',
+            'Mirae Asset Nifty Next 50 ETF': '147906',
+            'Aditya Birla Nifty Next 50 ETF': '145881',
+            'HDFC Nifty Next 50 ETF': '150477',
+            'Motilal Oswal Nifty Next 50 ETF': '153535'
+        };
+
+        function processFile() {
+            const fileInput = document.getElementById('fileInput');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                showStatus('Please select a file first', 'error');
+                return;
+            }
+            
+            const reader = new FileReader();
+            
+            reader.onload = function(e) {
+                try {
+                    const csvContent = e.target.result;
+                    
+                    // Parse CSV
+                    const parsed = Papa.parse(csvContent, {
+                        header: true,
+                        dynamicTyping: false,
+                        skipEmptyLines: true
+                    });
+
+                    if (parsed.errors.length > 0) {
+                        showStatus('Error parsing CSV: ' + parsed.errors[0].message, 'error');
+                        return;
+                    }
+
+                    const data = parsed.data;
+                    
+                    // Categorize ETFs and add scheme codes
+                    const categorizedData = categorizeETFs(data);
+                    
+                    // Count scheme codes added
+                    let schemeCodesAdded = 0;
+                    Object.values(categorizedData).forEach(category => {
+                        category.forEach(etf => {
+                            if (etf['Scheme Code'] && schemeCodeMapping[etf.Name]) {
+                                schemeCodesAdded++;
+                            }
+                        });
+                    });
+                    
+                    // Download Excel immediately
+                    downloadExcel(data.length, categorizedData, schemeCodesAdded);
+                    
+                } catch (error) {
+                    showStatus('Error processing file: ' + error.message, 'error');
+                }
+            };
+            
+            reader.onerror = function() {
+                showStatus('Error reading file', 'error');
+            };
+            
+            reader.readAsText(file);
+        }
+
+        function categorizeETFs(data) {
+            const categories = {
+                '250': [],
+                '150': [],
+                'Next 50': [],
+                'Other': []
+            };
+
+            data.forEach(etf => {
+                const name = etf.Name || '';
+                const nameLower = name.toLowerCase();
+                let categorized = false;
+
+                // Fill in scheme code if we have it
+                if (schemeCodeMapping[name]) {
+                    etf['Scheme Code'] = schemeCodeMapping[name];
+                } else if (!etf['Scheme Code']) {
+                    // Ensure the field exists even if empty
+                    etf['Scheme Code'] = '';
+                }
+
+                // Check 250 (exclude MQ)
+                if (name.includes('250') && !name.includes('MQ')) {
+                    categories['250'].push(etf);
+                    categorized = true;
+                } 
+                // Check 150 (exclude Quality and Momtm)
+                else if (name.includes('150') && !nameLower.includes('quality') && !nameLower.includes('momtm')) {
+                    categories['150'].push(etf);
+                    categorized = true;
+                } 
+                // Check Next 50 (exclude Sensex)
+                else if (nameLower.includes('next 50') && !nameLower.includes('sensex')) {
+                    categories['Next 50'].push(etf);
+                    categorized = true;
+                }
+
+                if (!categorized) {
+                    categories['Other'].push(etf);
+                }
+            });
+
+            return categories;
+        }
+
+        function downloadExcel(totalCount, categorizedData, schemeCodesAdded) {
+            // Create workbook
+            const wb = XLSX.utils.book_new();
+            
+            // Convert data to worksheet format
+            const wsData = [];
+            const merges = [];
+            
+            // Track category positions for merging
+            let currentRow = 1; // Excel rows are 1-indexed, and we start after header
+            const categoryOrder = ['250', '150', 'Next 50', 'Other'];
+            
+            // Add header row
+            let headers = ['Category'];
+            // Get headers from first non-empty category
+            for (const cat of categoryOrder) {
+                if (categorizedData[cat] && categorizedData[cat].length > 0) {
+                    headers = ['Category', ...Object.keys(categorizedData[cat][0])];
+                    break;
+                }
+            }
+            wsData.push(headers);
+            
+            categoryOrder.forEach(category => {
+                const categoryData = categorizedData[category];
+                if (categoryData && categoryData.length > 0) {
+                    const startRow = currentRow;
+                    
+                    // Sort ETFs within category
+                    const sorted = categoryData.sort((a, b) => {
+                        const assetA = parseFloat((a['Asset (Cr.)'] || '0').replace(/,/g, ''));
+                        const assetB = parseFloat((b['Asset (Cr.)'] || '0').replace(/,/g, ''));
+                        
+                        if (assetA !== assetB) {
+                            return assetB - assetA;
+                        }
+                        
+                        const volumeA = parseFloat((a['Volume'] || '0').replace(/,/g, ''));
+                        const volumeB = parseFloat((b['Volume'] || '0').replace(/,/g, ''));
+                        return volumeB - volumeA;
+                    });
+                    
+                    // Add rows
+                    sorted.forEach((etf, index) => {
+                        const row = [index === 0 ? category : ''];
+                        headers.slice(1).forEach(header => {
+                            row.push(etf[header] || '');
+                        });
+                        wsData.push(row);
+                        currentRow++;
+                    });
+                    
+                    // Add merge range if more than one row in category
+                    if (categoryData.length > 1) {
+                        merges.push({
+                            s: { r: startRow, c: 0 }, // start row, column
+                            e: { r: currentRow - 1, c: 0 } // end row, column
+                        });
+                    }
+                }
+            });
+            
+            // Create worksheet
+            const ws = XLSX.utils.aoa_to_sheet(wsData);
+            
+            // Add hyperlinks for scheme codes
+            const schemeCodeCol = headers.indexOf('Scheme Code');
+            if (schemeCodeCol > -1) {
+                for (let row = 1; row < wsData.length; row++) { // Start from 1 to skip header
+                    const schemeCode = wsData[row][schemeCodeCol];
+                    if (schemeCode && schemeCode !== '') {
+                        const cellAddress = XLSX.utils.encode_cell({ r: row, c: schemeCodeCol });
+                        ws[cellAddress].l = {
+                            Target: `https://api.mfapi.in/mf/${schemeCode}`,
+                            Tooltip: `View MF API data for ${schemeCode}`
+                        };
+                        // Style hyperlinks as blue and underlined
+                        ws[cellAddress].s = {
+                            font: {
+                                color: { rgb: "0000FF" },
+                                underline: true
+                            }
+                        };
+                    }
+                }
+            }
+            
+            // Apply merges
+            ws['!merges'] = merges;
+            
+            // Auto-fit columns
+            const colWidths = headers.map((header, index) => {
+                if (index === 0) return { wch: 12 }; // Category column
+                if (header.includes('Name')) return { wch: 40 };
+                if (header.includes('Asset') || header.includes('Volume')) return { wch: 15 };
+                return { wch: 12 };
+            });
+            ws['!cols'] = colWidths;
+            
+            // Add worksheet to workbook
+            XLSX.utils.book_append_sheet(wb, ws, "Categorized ETFs");
+            
+            // Generate Excel file
+            XLSX.writeFile(wb, "categorized_etfs.xlsx");
+            
+            // Show summary
+            const summary = categoryOrder.map(cat => 
+                `${cat}: ${categorizedData[cat].length}`
+            ).join(', ');
+            
+            showStatus(`Excel downloaded! Processed ${totalCount} ETFs, added ${schemeCodesAdded} scheme codes. Distribution: ${summary}`, 'success');
+        }
+
+        function showStatus(message, type) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.className = 'status ' + type;
+            statusDiv.textContent = message;
+        }
+    </script>
+</body>
+</html>
